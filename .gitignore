@@ -1,0 +1,5 @@
+*.mp4
+*.wav
+.venv
+__pycache__/
+.env
