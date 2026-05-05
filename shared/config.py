@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
 class AudioSettings:
     sample_rate_hz: int = 16_000
-    chunk_ms: int = 200
+    chunk_ms: int = 100
     buffer_seconds: int = 6
     step_seconds: int = 3
 
@@ -33,6 +33,15 @@ class RuntimeSettings:
         os.getenv("RECONNECT_DELAY_SECONDS", "2.0")
     )
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
+    buffer_timeout_seconds: float = field(
+        default_factory=lambda: float(os.getenv("BUFFER_TIMEOUT_SECONDS", "30"))
+    )
+    vad_silence_threshold_ms: int = field(
+        default_factory=lambda: int(os.getenv("VAD_SILENCE_THRESHOLD_MS", "700"))
+    )
+    vad_min_speech_seconds: float = field(
+        default_factory=lambda: float(os.getenv("VAD_MIN_SPEECH_SECONDS", "2.0"))
+    )
 
 
 @dataclass(frozen=True)

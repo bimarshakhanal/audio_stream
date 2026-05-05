@@ -50,15 +50,15 @@ def example_basic_usage():
     engine = _build_engine(num_speakers=2)
 
     # Load audio
-    audio_data, sample_rate = engine.load_audio("data/full_audio.wav")
+    audio_data, sample_rate = engine.load_audio("data/full_audio2.wav")
     print(f"Loaded audio: {len(audio_data)} samples @ {sample_rate}Hz")
 
     # Run diarization
-    intervals = engine.run_diarization("data/full_audio.wav")
+    intervals = engine.run_diarization("data/full_audio2.wav")
     # Reconstruct separated audio
     output_files = engine.reconstruct_speaker_audio(
         intervals,
-        output_dir="diarization_output"
+        output_dir="diarization_output/sample2/sample2"
     )
 
     # Display results
@@ -295,7 +295,7 @@ def example_independent_methods():
     # Step 4: Reconstruct with modified intervals
     output_files = engine.reconstruct_speaker_audio(
         intervals,
-        output_dir="diarization_output"
+        output_dir="diarization_output/sample2"
     )
     print(f"Audio reconstructed to: {output_files}")
 
