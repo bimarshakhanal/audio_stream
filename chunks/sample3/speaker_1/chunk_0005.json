@@ -2,8 +2,8 @@
   "filename": "chunk_0005.wav",
   "speaker_id": "1",
   "chunk_id": 5,
-  "start_time": 134.53,
-  "end_time": 150.0,
-  "num_samples": 192992,
-  "duration_seconds": 12.062
+  "start_time": 112.0,
+  "end_time": 140.82999999999998,
+  "num_samples": 115552,
+  "duration_seconds": 7.222
 }

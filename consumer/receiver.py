@@ -214,7 +214,26 @@ class StreamingConsumerApp:
             len(filtered_audio),
         )
 
-        self._reset_speaker_buffer(speaker_id)
+        # Keep last 2 seconds of raw audio for overlap with next buffer
+        overlap_seconds = 2.0
+        overlap_samples = int(overlap_seconds * self.audio_settings.sample_rate_hz)
+        
+        if len(full_audio) > overlap_samples:
+            overlap_audio = full_audio[-overlap_samples:]
+            overlap_start_time = buffer_start_time + (
+                (len(full_audio) - overlap_samples) / self.audio_settings.sample_rate_hz
+            )
+            self.speaker_buffers[speaker_id] = [overlap_audio]
+            self.speaker_buffer_samples[speaker_id] = len(overlap_audio)
+            self.speaker_buffer_start_time[speaker_id] = overlap_start_time
+            LOGGER.info(
+                "Keeping %.1fs overlap for speaker %s (samples=%d)",
+                overlap_seconds,
+                speaker_id,
+                len(overlap_audio),
+            )
+        else:
+            self._reset_speaker_buffer(speaker_id)
 
     def _handle_chunk(self, chunk_fields: Dict[str, Any]) -> None:
         event_type = chunk_fields.get("event", "chunk")
