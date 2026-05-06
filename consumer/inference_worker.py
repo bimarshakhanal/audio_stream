@@ -12,12 +12,12 @@ import time
 import copy
 from typing import Optional, List, Dict
 
+import torch
 from dotenv import load_dotenv
 from peft import PeftModel
 from transformers import (
     AutoProcessor,
     Qwen2AudioForConditionalGeneration,
-    TextIteratorStreamer,
 )
 import partial_json_parser
 
@@ -36,10 +36,10 @@ try:
 except ImportError:
     get_results_server = None  # type: ignore
 
-# Shared history storage: {speaker_id: [result_dict, ...]}
-shared_history: Dict[str, List[Dict]] = {}
+# Shared history storage: flat list of all results from all speakers
+shared_history: List[Dict] = []
 shared_history_lock = threading.Lock()
-MAX_HISTORY_PER_SPEAKER = 10
+MAX_HISTORY_SIZE = 8  # total items across all speakers
 
 
 def format_history(history: List[Dict]) -> str:
@@ -116,7 +116,7 @@ class InferenceWorker(threading.Thread):
         self,
         audio_array: np.ndarray,
         speaker_id: str = "unknown",
-        all_speakers_history: Optional[Dict[str, List[Dict]]] = None,
+        history: Optional[List[Dict]] = None,
     ) -> dict:
         """Placeholder for Qwen2Audio model inference.
 
@@ -136,19 +136,12 @@ class InferenceWorker(threading.Thread):
                 - answer_rating: (str) One of 'poor', 'satisfactory', 'excellent'
                 - follow_up_question: (str) Suggested follow-up question based on content
 
-        Note: This is a placeholder. Replace this with actual Qwen2Audio model call.
-        The real integration should:
-        1. Load audio into Qwen2Audio model
-        2. Provide conversation/history context as an input
-        3. Run inference to get transcript and analysis
-        4. Return results in the schema above
-
         To avoid blocking audio reception, this is called from InferenceWorker
         (a background thread) which consumes from a queue.
         """
 
-        all_hist = all_speakers_history or {}
-        history_text = format_history(all_hist)
+        hist = history or []
+        history_text = format_history(hist)
         prompt = USER_PROMPT.replace("<PREVIOUS CONTEXT>", history_text)
 
         convo = [{"role": "user", "content": [
@@ -160,7 +153,6 @@ class InferenceWorker(threading.Thread):
         inputs = self.processor(text=text, audios=[audio_array], return_tensors="pt", sampling_rate=16000)
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
-        import torch
         with torch.inference_mode():
             generate_ids = self.model.generate(**inputs, max_new_tokens=256, do_sample=False)
         generate_ids = generate_ids[:, inputs["input_ids"].size(1):]
@@ -206,13 +198,13 @@ class InferenceWorker(threading.Thread):
                     len(audio_array),
                 )
 
-                # Get a snapshot of all speakers' history
+                # Get a snapshot of shared history
                 with shared_history_lock:
-                    all_hist = copy.deepcopy(shared_history)
+                    hist_snapshot = copy.deepcopy(shared_history)
 
                 if ENABLE_QWEN_INFERENCE:
                     result = self.run_qwen_inference(
-                        audio_array, speaker_id=speaker_id, all_speakers_history=all_hist
+                        audio_array, speaker_id=speaker_id, history=hist_snapshot
                     )
                 else:
                     LOGGER.info("Qwen inference disabled; emitting placeholder (speaker=%s)", speaker_id)
@@ -231,13 +223,11 @@ class InferenceWorker(threading.Thread):
                 result["audio_duration_seconds"] = round(audio_duration, 3)
                 self._chunk_counters[speaker_id] += 1
 
-                # Append to shared history (bounded per speaker)
+                # Append to shared history (bounded total)
                 with shared_history_lock:
-                    if speaker_id not in shared_history:
-                        shared_history[speaker_id] = []
-                    shared_history[speaker_id].append(copy.deepcopy(result))
-                    if len(shared_history[speaker_id]) > MAX_HISTORY_PER_SPEAKER:
-                        shared_history[speaker_id].pop(0)
+                    shared_history.append(copy.deepcopy(result))
+                    if len(shared_history) > MAX_HISTORY_SIZE:
+                        shared_history.pop(0)
 
                 LOGGER.info(
                     "Inference completed (speaker=%s): transcript=%s, rating=%s",
