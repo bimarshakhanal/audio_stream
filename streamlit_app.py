@@ -239,7 +239,7 @@ def main() -> None:
                 if st.session_state.listener_thread is None:
                     start_listener(ws_uri)
                 st.session_state.connected = True
-        
+        43
         with col2:
             if st.button("Disconnect", use_container_width=True):
                 stop_listener()

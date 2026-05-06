@@ -21,6 +21,11 @@ from transformers import (
 )
 import partial_json_parser
 
+# Toggle to enable/disable calling the Qwen inference path. Set to '0'/'false' to disable.
+load_dotenv()
+_env_flag = os.getenv("ENABLE_QWEN_INFERENCE", "1")
+ENABLE_QWEN_INFERENCE = str(_env_flag).strip().lower() in ("1", "true", "yes", "on")
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -98,7 +103,13 @@ class InferenceWorker(threading.Thread):
         self._chunk_counter = 0
         self._history_max = int(history_max)
         self._history: List[Dict] = []
-        self.processor, self.model = load_model()
+        # Only load model if inference is enabled
+        if ENABLE_QWEN_INFERENCE:
+            self.processor, self.model = load_model()
+        else:
+            LOGGER.info("Qwen inference disabled; skipping model loading")
+            self.processor = None
+            self.model = None
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -192,7 +203,18 @@ class InferenceWorker(threading.Thread):
                 
                 # Provide a snapshot of history to the model so it can use past outputs
                 history_snapshot = copy.deepcopy(self._history)
-                result = self.run_qwen_inference(item, speaker_id=self._speaker_id, history=history_snapshot)
+                if ENABLE_QWEN_INFERENCE:
+                    result = self.run_qwen_inference(item, speaker_id=self._speaker_id, history=history_snapshot)
+                else:
+                    LOGGER.info("Qwen inference disabled by env; emitting placeholder result (speaker=%s)", self._speaker_id)
+                    result = {
+                        "speaker": self._speaker_id,
+                        "transcript": "",
+                        "technical_qa": False,
+                        "response_reasoning": "",
+                        "answer_rating": "disabled",
+                        "follow_up_question": "",
+                    }
 
                 print("Result: ", result)
 
