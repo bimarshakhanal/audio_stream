@@ -135,34 +135,62 @@ def drain_incoming_results() -> int:
 def _rating_badge(rating: str) -> str:
     rating = (rating or "satisfactory").lower()
     if rating == "excellent":
-        return "🟢 Excellent"
+        return "🟢"
     if rating == "poor":
-        return "🔴 Poor"
-    return "🟡 Satisfactory"
+        return "🔴"
+    return "🟡"
 
 
-def display_message(message: dict) -> None:
-    """Display model output in a UI-friendly compact card."""
+def _speaker_icon(speaker_id: str) -> str:
+    """Return an icon based on speaker ID."""
+    speaker_id_lower = str(speaker_id).lower()
+    if "0" in speaker_id_lower or "speaker1" in speaker_id_lower:
+        return "👤"
+    return "👥"
+
+
+def display_message(message: dict, index: int) -> None:
+    """Display model output in a styled box with alternating background."""
     speaker = message.get("speaker_id", "unknown")
-    technical_flag = "✅ True" if message.get("technical_qa", False) else "❌ False"
+    speaker_icon = _speaker_icon(speaker)
+    technical_flag = "✅" if message.get("technical_qa", False) else "❌"
     rating_label = _rating_badge(message.get("answer_rating", "satisfactory"))
-
-    with st.container(border=True):
-        st.markdown(f"**Speaker:** {speaker}")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown(f"**TechnicalQA:** {technical_flag}")
-        with col2:
-            st.markdown(f"**Answer Rating:** {rating_label}")
-
-        st.markdown("**Transcript**")
-        st.write(message["transcript"])
-
-        st.markdown("**Reasoning**")
-        st.write(message["response_reasoning"])
-
-        st.markdown("**Followup**")
-        st.write(message["follow_up_question"])
+    transcript = message["transcript"]
+    reasoning = message["response_reasoning"]
+    followup = message["follow_up_question"]
+    
+    # Alternate background colors for dark theme
+    bg_color = "#1e1e1e" if index % 2 == 0 else "#262626"
+    text_color = "#e0e0e0"
+    accent_color = "#4a9eff"
+    
+    st.markdown(
+        f"""
+        <div style="background-color: {bg_color}; padding: 16px; border-radius: 8px; margin: 8px 0; color: {text_color};">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <div style="font-weight: bold; font-size: 16px; color: {accent_color};">
+                    {speaker_icon} <span style="margin-left: 6px;">{speaker}</span>
+                </div>
+                <div style="display: flex; gap: 12px; font-size: 14px; color: #b0b0b0;">
+                    <span>QA: {technical_flag}</span>
+                    <span>Rating: {rating_label}</span>
+                </div>
+            </div>
+            <div style="margin: 10px 0; padding: 8px; background: rgba(74, 158, 255, 0.1); border-left: 3px solid {accent_color}; border-radius: 4px;">
+                <strong style="color: {accent_color};">Transcript:</strong> <em style="color: {text_color};">{transcript}</em>
+            </div>
+            <div style="margin: 8px 0; display: flex; gap: 8px;">
+                <span>💭</span>
+                <span style="color: #c0c0c0;">{reasoning}</span>
+            </div>
+            <div style="margin: 8px 0; display: flex; gap: 8px;">
+                <span>❓</span>
+                <span style="color: #c0c0c0;">{followup}</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def main() -> None:
@@ -216,10 +244,10 @@ def main() -> None:
             for message in st.session_state.messages[speaker_id]:
                 all_messages.append(message)
 
-        all_messages.sort(key=lambda x: x["timestamp"], reverse=True)
+        all_messages.sort(key=lambda x: x["timestamp"])
 
-        for message in all_messages:
-            display_message(message)
+        for idx, message in enumerate(all_messages):
+            display_message(message, idx)
 
     if st.session_state.connected:
         time.sleep(0.7)
