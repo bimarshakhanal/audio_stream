@@ -10,6 +10,13 @@ import copy
 from typing import Optional, List, Dict
 
 import numpy as np
+import os
+
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - optional dependency
+    def load_dotenv():
+        return None
 
 LOGGER = logging.getLogger(__name__)
 
@@ -19,6 +26,17 @@ try:
     from consumer.results_server import get_results_server
 except ImportError:
     get_results_server = None  # type: ignore
+
+
+def format_history(history):
+    """
+    Format conversation history to use as context to Qwen Model
+    """
+    context = ""
+    for item in history:
+        speaker = "inteviewer" if item["speaker"] == 1 else "candidate"
+        context += f"{speaker}: {item["transcript"]}\n"
+    return context.strip()
 
 
 def run_qwen_inference(
@@ -64,12 +82,73 @@ def run_qwen_inference(
     history_len = len(history) if history is not None else 0
 
     return {
+        "speaker": speaker_id,
         "transcript": f"Transcribed text from audio... (speaker={speaker_id}, history={history_len})",
         "technical_qa": bool(history_len % 2 == 0),
         "response_reasoning": "Reasoning for the technical response...",
         "answer_rating": "satisfactory",
         "follow_up_question": "This is a follow-up question?",
     }
+
+
+def load_model() -> tuple:
+    """Load Qwen2Audio processor and LoRA-adapted model.
+
+    Reads `MODEL_NAME` and `LORA_PATH` from a `.env` file or environment.
+
+    Returns:
+        (processor, model)
+    """
+    # Load env vars if present
+    try:
+        load_dotenv()
+    except Exception:
+        # noop if dotenv not available
+        pass
+
+    model_name = os.getenv("MODEL_NAME") or os.getenv("QWEN2AUDIO_MODEL_NAME")
+    lora_path = os.getenv("LORA_PATH") or os.getenv("QWEN2AUDIO_LORA_PATH")
+
+    if not model_name:
+        raise RuntimeError("MODEL_NAME not set in environment or .env")
+    if not lora_path:
+        raise RuntimeError("LORA_PATH not set in environment or .env")
+
+    LOGGER.info("Loading model and processor... model=%s lora=%s", model_name, lora_path)
+
+    try:
+        from transformers import AutoProcessor
+    except Exception as exc:
+        LOGGER.exception("Transformers import failed: %s", exc)
+        raise
+
+    try:
+        # qwen package name may vary; try common locations
+        from qwen_audio import Qwen2AudioForConditionalGeneration  # type: ignore
+    except Exception:
+        try:
+            from qwen.modeling_qwen2audio import Qwen2AudioForConditionalGeneration  # type: ignore
+        except Exception as exc:
+            LOGGER.exception("Qwen2Audio model import failed: %s", exc)
+            raise
+
+    try:
+        from peft import PeftModel  # type: ignore
+    except Exception as exc:
+        LOGGER.exception("PEFT import failed: %s", exc)
+        raise
+
+    processor = AutoProcessor.from_pretrained(model_name, cache_dir="hf_models")
+
+    base_model = Qwen2AudioForConditionalGeneration.from_pretrained(
+        model_name, torch_dtype="auto", device_map="auto", cache_dir="hf_models"
+    )
+
+    model = PeftModel.from_pretrained(base_model, lora_path)
+    model.eval()
+
+    LOGGER.info("Model and processor loaded successfully")
+    return processor, model
 
 
 class InferenceWorker(threading.Thread):
@@ -88,6 +167,7 @@ class InferenceWorker(threading.Thread):
         self._chunk_counter = 0
         self._history_max = int(history_max)
         self._history: List[Dict] = []
+        self.model = None
 
     def stop(self) -> None:
         self._stop_event.set()
