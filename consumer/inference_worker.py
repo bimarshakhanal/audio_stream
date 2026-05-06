@@ -13,6 +13,7 @@ import numpy as np
 
 LOGGER = logging.getLogger(__name__)
 
+from consumer.infer_utils import USER_PROMPT
 # Import results server for broadcasting
 try:
     from consumer.results_server import get_results_server
@@ -20,7 +21,11 @@ except ImportError:
     get_results_server = None  # type: ignore
 
 
-def run_qwen_inference(audio_array: np.ndarray, history: Optional[List[Dict]] = None) -> dict:
+def run_qwen_inference(
+    audio_array: np.ndarray,
+    speaker_id: str = "unknown",
+    history: Optional[List[Dict]] = None,
+) -> dict:
     """Placeholder for Qwen2Audio model inference.
 
     This function is isolated so the real Qwen2Audio integration can be added
@@ -28,6 +33,7 @@ def run_qwen_inference(audio_array: np.ndarray, history: Optional[List[Dict]] = 
 
     Args:
         audio_array: numpy float32 array of audio samples (16kHz mono)
+        speaker_id: identifier of the speaker (e.g., "speaker_1", "speaker_2")
         history: optional list of past inference result dicts (most recent last)
 
     Returns:
@@ -54,11 +60,11 @@ def run_qwen_inference(audio_array: np.ndarray, history: Optional[List[Dict]] = 
     processing_time = 0.2 + (duration_s * 0.01)
     time.sleep(processing_time)
 
-    # Example mock response that uses history length to vary output.
+    # Example mock response that uses history length and speaker_id to vary output.
     history_len = len(history) if history is not None else 0
 
     return {
-        "transcript": f"Transcribed text from audio... (history={history_len})",
+        "transcript": f"Transcribed text from audio... (speaker={speaker_id}, history={history_len})",
         "technical_qa": bool(history_len % 2 == 0),
         "response_reasoning": "Reasoning for the technical response...",
         "answer_rating": "satisfactory",
@@ -103,14 +109,14 @@ class InferenceWorker(threading.Thread):
                 audio_duration = len(item) / 16_000.0
                 LOGGER.info(
                     "Processing audio chunk (speaker=%s): duration=%.2fs samples=%d",
-                    self._speaker_id,
+                    self._speaker_id, 
                     audio_duration,
                     len(item),
                 )
                 
                 # Provide a snapshot of history to the model so it can use past outputs
                 history_snapshot = copy.deepcopy(self._history)
-                result = run_qwen_inference(item, history=history_snapshot)
+                result = run_qwen_inference(item, speaker_id=self._speaker_id, history=history_snapshot)
 
                 # Add metadata
                 result["speaker_id"] = self._speaker_id
