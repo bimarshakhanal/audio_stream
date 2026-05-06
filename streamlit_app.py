@@ -12,12 +12,13 @@ from collections import defaultdict
 from datetime import datetime
 
 import streamlit as st
+import streamlit.components.v1 as components
 import websockets
 
 LOGGER = logging.getLogger(__name__)
 
 st.set_page_config(
-    page_title="Qwen Output",
+    page_title="",
     layout="wide",
 )
 
@@ -149,8 +150,8 @@ def _speaker_icon(speaker_id: str) -> str:
     return "👥"
 
 
-def display_message(message: dict, index: int) -> None:
-    """Display model output in a styled box with alternating background."""
+def _render_message_html(message: dict, index: int) -> str:
+    """Return HTML for a single message (used inside a scrollable container)."""
     speaker = message.get("speaker_id", "unknown")
     speaker_icon = _speaker_icon(speaker)
     technical_flag = "✅" if message.get("technical_qa", False) else "❌"
@@ -158,47 +159,69 @@ def display_message(message: dict, index: int) -> None:
     transcript = message["transcript"]
     reasoning = message["response_reasoning"]
     followup = message["follow_up_question"]
-    
+
     # Alternate background colors for dark theme
     bg_color = "#1e1e1e" if index % 2 == 0 else "#262626"
     text_color = "#e0e0e0"
     accent_color = "#4a9eff"
-    
-    st.markdown(
-        f"""
-        <div style="background-color: {bg_color}; padding: 16px; border-radius: 8px; margin: 8px 0; color: {text_color};">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                <div style="font-weight: bold; font-size: 16px; color: {accent_color};">
-                    {speaker_icon} <span style="margin-left: 6px;">{speaker}</span>
-                </div>
-                <div style="display: flex; gap: 12px; font-size: 14px; color: #b0b0b0;">
-                    <span>QA: {technical_flag}</span>
-                    <span>Rating: {rating_label}</span>
-                </div>
+
+    html = f"""
+    <div style="background-color: {bg_color}; padding: 12px; border-radius: 8px; margin: 6px 0; color: {text_color};">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <div style="font-weight: bold; font-size: 14px; color: {accent_color};">
+                {speaker_icon} <span style="margin-left: 6px;">{speaker}</span>
             </div>
-            <div style="margin: 10px 0; padding: 8px; background: rgba(74, 158, 255, 0.1); border-left: 3px solid {accent_color}; border-radius: 4px;">
-                <strong style="color: {accent_color};">Transcript:</strong> <em style="color: {text_color};">{transcript}</em>
-            </div>
-            <div style="margin: 8px 0; display: flex; gap: 8px;">
-                <span>💭</span>
-                <span style="color: #c0c0c0;">{reasoning}</span>
-            </div>
-            <div style="margin: 8px 0; display: flex; gap: 8px;">
-                <span>❓</span>
-                <span style="color: #c0c0c0;">{followup}</span>
+            <div style="display: flex; gap: 10px; font-size: 13px; color: #b0b0b0;">
+                <span>QA: {technical_flag}</span>
+                <span>Rating: {rating_label}</span>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        <div style="margin: 8px 0; padding: 6px; background: rgba(74, 158, 255, 0.06); border-left: 3px solid {accent_color}; border-radius: 4px;">
+            <strong style="color: {accent_color};">Transcript:</strong> <em style="color: {text_color};">{transcript}</em>
+        </div>
+        <div style="margin: 6px 0; display: flex; gap: 8px;">
+            <span>💭</span>
+            <span style="color: #c0c0c0;">{reasoning}</span>
+        </div>
+        <div style="margin: 6px 0; display: flex; gap: 8px;">
+            <span>❓</span>
+            <span style="color: #c0c0c0;">{followup}</span>
+        </div>
+    </div>
+    """
+    return html
+
+
+def display_message(message: dict, index: int) -> None:
+    """Backward-compatible wrapper that renders a message to Streamlit."""
+    html = _render_message_html(message, index)
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def main() -> None:
     """Main Streamlit app."""
-    st.title("Qwen Output")
+    st.title("Live Audio Inference")
 
     drained_count = drain_incoming_results()
-    
+
+    # Fixed header (appears above the scrollable chat area)
+    header_bg = "#0f1720"
+    header_text = "#e6eef8"
+    conn_status = "Connected" if st.session_state.connected else "Disconnected"
+    conn_color = "#2ecc71" if st.session_state.connected else "#ff6b6b"
+    header_html = f"""
+    <div style="position: sticky; top: 0; z-index: 999; background: {header_bg}; padding: 12px; border-radius: 6px; margin-bottom: 8px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; color: {header_text};">
+            <div style="font-size:18px; font-weight:700;">#</div>
+            <div style="display:flex; gap:12px; align-items:center;">
+                <div style="font-size:13px; color:{conn_color};">●</div>
+                <div style="font-size:13px; color:{header_text};">{conn_status}</div>
+            </div>
+        </div>
+    </div>
+    """
+    components.html(header_html, height=80, scrolling=False)
+
     # Sidebar configuration
     with st.sidebar:
         st.header("Configuration")
@@ -235,7 +258,7 @@ def main() -> None:
         if drained_count:
             st.caption(f"Received {drained_count}")
     
-    # Main output area
+    # Main output area: render messages inside a fixed-height scrollable container
     if not st.session_state.messages:
         st.write("Waiting for results...")
     else:
@@ -246,8 +269,20 @@ def main() -> None:
 
         all_messages.sort(key=lambda x: x["timestamp"])
 
+        # Build HTML for all messages and render inside a scrollable div
+        html_parts = []
         for idx, message in enumerate(all_messages):
-            display_message(message, idx)
+            html_parts.append(_render_message_html(message, idx))
+
+        chat_html = (
+            "<div style='height:70vh; overflow-y:auto; padding-right:12px;'>"
+            + "".join(html_parts)
+            + "</div>"
+        )
+
+        # Use a taller iframe so the chat area reaches further down the screen.
+        # If your screen is larger, increase this value (e.g. 900 or 1000).
+        components.html(chat_html, height=900, scrolling=True)
 
     if st.session_state.connected:
         time.sleep(0.7)
