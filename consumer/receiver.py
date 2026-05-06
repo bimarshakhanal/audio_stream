@@ -124,8 +124,17 @@ class StreamingConsumerApp:
             self.runtime_settings.buffer_timeout_seconds * self.audio_settings.sample_rate_hz
         )
 
-        self.inference_queue: queue.Queue = queue.Queue()
-        self.inference_worker = InferenceWorker(self.inference_queue)
+        # Per-speaker inference queues and workers
+        self.speaker_inference_queues: Dict[str, queue.Queue] = {
+            speaker_id: queue.Queue() for speaker_id in self.speaker_ids
+        }
+        self.speaker_inference_workers: Dict[str, InferenceWorker] = {
+            speaker_id: InferenceWorker(
+                self.speaker_inference_queues[speaker_id],
+                speaker_id=speaker_id,
+            )
+            for speaker_id in self.speaker_ids
+        }
 
         self.receiver = WebSocketChunkReceiver(
             websocket_settings=self.websocket_settings,
@@ -205,7 +214,8 @@ class StreamingConsumerApp:
         with open(json_path, "w", encoding="utf-8") as file_handle:
             json.dump(metadata, file_handle, indent=2)
 
-        self.inference_queue.put(filtered_audio)
+        # Queue audio for inference (speaker-specific queue)
+        self.speaker_inference_queues[speaker_id].put(filtered_audio)
         LOGGER.info(
             "Saved speaker=%s chunk=%d path=%s samples=%d",
             speaker_id,
@@ -315,7 +325,20 @@ class StreamingConsumerApp:
 
     def run(self) -> None:
         self._install_signal_handlers()
-        self.inference_worker.start()
+        
+        # Start results server
+        try:
+            from consumer.results_server import get_results_server
+            results_server = get_results_server()
+            results_server.start_background()
+        except OSError:  # pylint: disable=broad-except
+            LOGGER.warning("Could not start results server")
+        
+        # Start per-speaker inference workers
+        for speaker_id, worker in self.speaker_inference_workers.items():
+            worker.start()
+            LOGGER.info("Started inference worker for speaker %s", speaker_id)
+        
         self.receiver.start()
 
         LOGGER.info("Consumer is running. Waiting for chunks...")
@@ -325,8 +348,19 @@ class StreamingConsumerApp:
         finally:
             self.stop_event.set()
             self.receiver.join(timeout=3)
-            self.inference_worker.stop()
-            self.inference_worker.join(timeout=3)
+            
+            # Stop all inference workers
+            for speaker_id, worker in self.speaker_inference_workers.items():
+                worker.stop()
+                worker.join(timeout=3)
+                LOGGER.info("Stopped inference worker for speaker %s", speaker_id)
+
+            try:
+                from consumer.results_server import get_results_server
+                get_results_server().stop()
+            except OSError:
+                LOGGER.warning("Could not stop results server cleanly")
+            
             LOGGER.info("Consumer shutdown complete")
 
 

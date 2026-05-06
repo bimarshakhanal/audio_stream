@@ -12,6 +12,12 @@ import numpy as np
 
 LOGGER = logging.getLogger(__name__)
 
+# Import results server for broadcasting
+try:
+    from consumer.results_server import get_results_server
+except ImportError:
+    get_results_server = None  # type: ignore
+
 
 def run_qwen_inference(audio_array: np.ndarray) -> dict:
     """Placeholder for Qwen2Audio model inference.
@@ -39,8 +45,7 @@ def run_qwen_inference(audio_array: np.ndarray) -> dict:
     To avoid blocking audio reception, this is called from InferenceWorker
     (a background thread) which consumes from a queue.
     """
-    # TODO: Replace with actual Qwen2Audio model inference
-    # For now, simulate with delays and mock data
+    # Placeholder implementation for now.
 
     duration_s = len(audio_array) / 16_000.0
 
@@ -50,28 +55,34 @@ def run_qwen_inference(audio_array: np.ndarray) -> dict:
 
     # Mock response (replace with real model output)
     return {
-        "transcript": "[PLACEHOLDER] Transcribed text from audio...",
-        "technical_qa": "[PLACEHOLDER] Technical question answering response...",
-        "response_reasoning": "[PLACEHOLDER] Reasoning for the technical response...",
-        "answer_rating": "medium",
-        "follow_up_question": "[PLACEHOLDER] Suggested follow-up question...",
+        "transcript": "Transcribed text from audio...",
+        "technical_qa": True,
+        "response_reasoning": "Reasoning for the technical response...",
+        "answer_rating": "Satisfactory",
+        "follow_up_question": "This is a follow-up question?",
     }
 
 
 class InferenceWorker(threading.Thread):
     """Consumes audio windows from a queue and runs inference async."""
 
-    def __init__(self, job_queue: "queue.Queue[Optional[np.ndarray]]") -> None:
-        super().__init__(name="inference-worker", daemon=True)
+    def __init__(
+        self,
+        job_queue: "queue.Queue[Optional[np.ndarray]]",
+        speaker_id: str = "unknown",
+    ) -> None:
+        super().__init__(name=f"inference-worker-speaker{speaker_id}", daemon=True)
         self._queue = job_queue
+        self._speaker_id = speaker_id
         self._stop_event = threading.Event()
+        self._chunk_counter = 0
 
     def stop(self) -> None:
         self._stop_event.set()
         self._queue.put(None)
 
     def run(self) -> None:
-        LOGGER.info("Inference worker started")
+        LOGGER.info("Inference worker started for speaker %s", self._speaker_id)
         while not self._stop_event.is_set():
             try:
                 item = self._queue.get(timeout=0.5)
@@ -84,18 +95,36 @@ class InferenceWorker(threading.Thread):
 
             try:
                 audio_duration = len(item) / 16_000.0
-                LOGGER.info("Processing audio chunk: duration=%.2fs samples=%d", audio_duration, len(item))
+                LOGGER.info(
+                    "Processing audio chunk (speaker=%s): duration=%.2fs samples=%d",
+                    self._speaker_id,
+                    audio_duration,
+                    len(item),
+                )
                 
                 result = run_qwen_inference(item)
                 
+                # Add metadata
+                result["speaker_id"] = self._speaker_id
+                result["chunk_number"] = self._chunk_counter
+                result["audio_duration_seconds"] = round(audio_duration, 3)
+                self._chunk_counter += 1
+                
                 LOGGER.info(
-                    "Inference completed: transcript=%s, rating=%s",
+                    "Inference completed (speaker=%s): transcript=%s, rating=%s",
+                    self._speaker_id,
                     result.get("transcript", "N/A")[:50],
                     result.get("answer_rating", "N/A"),
                 )
-            except Exception:
-                LOGGER.exception("Inference failed")
+                
+                # Broadcast result via WebSocket
+                if get_results_server is not None:
+                    server = get_results_server()
+                    server.broadcast_result_async(result)
+                        
+            except Exception:  # pylint: disable=broad-except
+                LOGGER.exception("Inference failed (speaker=%s)", self._speaker_id)
             finally:
                 self._queue.task_done()
 
-        LOGGER.info("Inference worker stopped")
+        LOGGER.info("Inference worker stopped for speaker %s", self._speaker_id)

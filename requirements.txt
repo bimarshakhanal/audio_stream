@@ -13,3 +13,4 @@ lhotse==1.32.2
 kaldialign==0.9.3
 jiwer==4.0.0
 editdistance==0.8.1
+streamlit>=1.28.0
