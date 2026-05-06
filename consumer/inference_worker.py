@@ -36,8 +36,13 @@ try:
 except ImportError:
     get_results_server = None  # type: ignore
 
+# Shared history storage: {speaker_id: [result_dict, ...]}
+shared_history: Dict[str, List[Dict]] = {}
+shared_history_lock = threading.Lock()
+MAX_HISTORY_PER_SPEAKER = 10
 
-def format_history(history):
+
+def format_history(history: List[Dict]) -> str:
     """
     Format conversation history to use as context to Qwen Model
     """
@@ -88,21 +93,13 @@ def load_model() -> tuple:
 
 
 class InferenceWorker(threading.Thread):
-    """Consumes audio windows from a queue and runs inference async."""
+    """Consumes audio chunks (audio_array, speaker_id) tuples from a shared queue."""
 
-    def __init__(
-        self,
-        job_queue: "queue.Queue[Optional[np.ndarray]]",
-        speaker_id: str = "unknown",
-        history_max: int = 10,
-    ) -> None:
-        super().__init__(name=f"inference-worker-speaker{speaker_id}", daemon=True)
+    def __init__(self, job_queue: "queue.Queue") -> None:
+        super().__init__(name="inference-worker-shared", daemon=True)
         self._queue = job_queue
-        self._speaker_id = speaker_id
         self._stop_event = threading.Event()
-        self._chunk_counter = 0
-        self._history_max = int(history_max)
-        self._history: List[Dict] = []
+        self._chunk_counters: Dict[str, int] = {}  # per-speaker counters
         # Only load model if inference is enabled
         if ENABLE_QWEN_INFERENCE:
             self.processor, self.model = load_model()
@@ -119,7 +116,7 @@ class InferenceWorker(threading.Thread):
         self,
         audio_array: np.ndarray,
         speaker_id: str = "unknown",
-        history: Optional[List[Dict]] = [],
+        all_speakers_history: Optional[Dict[str, List[Dict]]] = None,
     ) -> dict:
         """Placeholder for Qwen2Audio model inference.
 
@@ -150,19 +147,22 @@ class InferenceWorker(threading.Thread):
         (a background thread) which consumes from a queue.
         """
 
-        history_text = format_history(history)
+        all_hist = all_speakers_history or {}
+        history_text = format_history(all_hist)
         prompt = USER_PROMPT.replace("<PREVIOUS CONTEXT>", history_text)
 
         convo = [{"role": "user", "content": [
             {"type": "text", "text": prompt}, 
-            {"type": "audio", "audio": "test.wav"}
+            {"type": "audio", "audio": audio_array}
             ]}]
         
         text = self.processor.apply_chat_template(convo, add_generation_prompt=True, tokenize=False)
-        inputs = self.processor(text=text, audio=audio_array, return_tensors="pt", sampling_rate=16000).to(self.model.device)
+        inputs = self.processor(text=text, audios=[audio_array], return_tensors="pt", sampling_rate=16000)
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
-        generate_ids = self.model.generate(**inputs, max_length=2048, temperature=1e-3)
+        import torch
+        with torch.inference_mode():
+            generate_ids = self.model.generate(**inputs, max_new_tokens=256, do_sample=False)
         generate_ids = generate_ids[:, inputs["input_ids"].size(1):]
 
         response = self.processor.batch_decode(
@@ -181,7 +181,7 @@ class InferenceWorker(threading.Thread):
         }
 
     def run(self) -> None:
-        LOGGER.info("Inference worker started for speaker %s", self._speaker_id)
+        LOGGER.info("Shared inference worker started")
         while not self._stop_event.is_set():
             try:
                 item = self._queue.get(timeout=0.5)
@@ -193,22 +193,31 @@ class InferenceWorker(threading.Thread):
                 break
 
             try:
-                audio_duration = len(item) / 16_000.0
+                audio_array, speaker_id = item
+                audio_duration = len(audio_array) / 16_000.0
+
+                if speaker_id not in self._chunk_counters:
+                    self._chunk_counters[speaker_id] = 0
+
                 LOGGER.info(
                     "Processing audio chunk (speaker=%s): duration=%.2fs samples=%d",
-                    self._speaker_id, 
+                    speaker_id,
                     audio_duration,
-                    len(item),
+                    len(audio_array),
                 )
-                
-                # Provide a snapshot of history to the model so it can use past outputs
-                history_snapshot = copy.deepcopy(self._history)
+
+                # Get a snapshot of all speakers' history
+                with shared_history_lock:
+                    all_hist = copy.deepcopy(shared_history)
+
                 if ENABLE_QWEN_INFERENCE:
-                    result = self.run_qwen_inference(item, speaker_id=self._speaker_id, history=history_snapshot)
+                    result = self.run_qwen_inference(
+                        audio_array, speaker_id=speaker_id, all_speakers_history=all_hist
+                    )
                 else:
-                    LOGGER.info("Qwen inference disabled by env; emitting placeholder result (speaker=%s)", self._speaker_id)
+                    LOGGER.info("Qwen inference disabled; emitting placeholder (speaker=%s)", speaker_id)
                     result = {
-                        "speaker": self._speaker_id,
+                        "speaker": speaker_id,
                         "transcript": "",
                         "technical_qa": False,
                         "response_reasoning": "",
@@ -216,40 +225,35 @@ class InferenceWorker(threading.Thread):
                         "follow_up_question": "",
                     }
 
-                print("Result: ", result)
-
                 # Add metadata
-                result["speaker_id"] = self._speaker_id
-                result["chunk_number"] = self._chunk_counter
+                result["speaker_id"] = speaker_id
+                result["chunk_number"] = self._chunk_counters[speaker_id]
                 result["audio_duration_seconds"] = round(audio_duration, 3)
-                self._chunk_counter += 1
+                self._chunk_counters[speaker_id] += 1
 
-                # Append a copy of the result to the in-memory history (bounded)
-                try:
-                    self._history.append(copy.deepcopy(result))
-                    if len(self._history) > self._history_max:
-                        # drop oldest
-                        self._history.pop(0)
-                except Exception as exc:
-                    LOGGER.exception(
-                        "Failed to update history for speaker %s (%s)", self._speaker_id, exc
-                    )
-                
+                # Append to shared history (bounded per speaker)
+                with shared_history_lock:
+                    if speaker_id not in shared_history:
+                        shared_history[speaker_id] = []
+                    shared_history[speaker_id].append(copy.deepcopy(result))
+                    if len(shared_history[speaker_id]) > MAX_HISTORY_PER_SPEAKER:
+                        shared_history[speaker_id].pop(0)
+
                 LOGGER.info(
                     "Inference completed (speaker=%s): transcript=%s, rating=%s",
-                    self._speaker_id,
+                    speaker_id,
                     result.get("transcript", "N/A")[:50],
                     result.get("answer_rating", "N/A"),
                 )
-                
+
                 # Broadcast result via WebSocket
                 if get_results_server is not None:
                     server = get_results_server()
                     server.broadcast_result_async(result)
-                        
+
             except Exception:  # pylint: disable=broad-except
-                LOGGER.exception("Inference failed (speaker=%s)", self._speaker_id)
+                LOGGER.exception("Inference failed")
             finally:
                 self._queue.task_done()
 
-        LOGGER.info("Inference worker stopped for speaker %s", self._speaker_id)
+        LOGGER.info("Shared inference worker stopped")
