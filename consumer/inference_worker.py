@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import os
+import json
 
 import logging
 import queue
@@ -25,6 +26,11 @@ import partial_json_parser
 load_dotenv()
 _env_flag = os.getenv("ENABLE_QWEN_INFERENCE", "1")
 ENABLE_QWEN_INFERENCE = str(_env_flag).strip().lower() in ("1", "true", "yes", "on")
+
+# Toggle whether broadcasting results to the WebSocket results server is enabled.
+# Set env var ENABLE_RESULTS_SERVER=0/false to disable broadcasting.
+_env_rs_flag = os.getenv("ENABLE_RESULTS_SERVER", "1")
+ENABLE_RESULTS_SERVER = str(_env_rs_flag).strip().lower() in ("1", "true", "yes", "on")
 
 
 LOGGER = logging.getLogger(__name__)
@@ -187,7 +193,13 @@ class InferenceWorker(threading.Thread):
                 break
 
             try:
-                audio_array, speaker_id = item
+                # Backwards-compatible: support queued items of form
+                # (audio_array, speaker_id) or (audio_array, speaker_id, json_path)
+                json_path = None
+                if isinstance(item, tuple) and len(item) == 3:
+                    audio_array, speaker_id, json_path = item
+                else:
+                    audio_array, speaker_id = item
                 audio_duration = len(audio_array) / 16_000.0
 
                 if speaker_id not in self._chunk_counters:
@@ -238,8 +250,23 @@ class InferenceWorker(threading.Thread):
                     result.get("answer_rating", "N/A"),
                 )
 
-                # Broadcast result via WebSocket
-                if get_results_server is not None:
+                # Save model output into the chunk's JSON metadata file if provided
+                if json_path:
+                    try:
+                        try:
+                            with open(json_path, "r", encoding="utf-8") as fh:
+                                existing = json.load(fh)
+                        except Exception:
+                            existing = {}
+
+                        existing["model_output"] = result
+                        with open(json_path, "w", encoding="utf-8") as fh:
+                            json.dump(existing, fh, indent=2)
+                    except Exception:
+                        LOGGER.exception("Failed to write model output to %s", json_path)
+
+                # Broadcast result via WebSocket (only when enabled)
+                if ENABLE_RESULTS_SERVER and get_results_server is not None:
                     server = get_results_server()
                     server.broadcast_result_async(result)
 

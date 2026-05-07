@@ -206,8 +206,9 @@ class StreamingConsumerApp:
         with open(json_path, "w", encoding="utf-8") as file_handle:
             json.dump(metadata, file_handle, indent=2)
 
-        # Queue audio for inference (shared queue with speaker_id)
-        self.inference_queue.put((filtered_audio, speaker_id))
+        # Queue audio for inference (shared queue with speaker_id and json path)
+        # Inference worker will write model output into the same JSON file.
+        self.inference_queue.put((filtered_audio, speaker_id, str(json_path)))
         LOGGER.info(
             "Saved speaker=%s chunk=%d path=%s samples=%d",
             speaker_id,
@@ -318,13 +319,14 @@ class StreamingConsumerApp:
     def run(self) -> None:
         self._install_signal_handlers()
         
-        # Start results server
-        try:
-            from consumer.results_server import get_results_server
-            results_server = get_results_server()
-            results_server.start_background()
-        except OSError:  # pylint: disable=broad-except
-            LOGGER.warning("Could not start results server")
+        # Start results server (only if enabled in runtime settings)
+        if self.runtime_settings.enable_results_server:
+            try:
+                from consumer.results_server import get_results_server
+                results_server = get_results_server()
+                results_server.start_background()
+            except OSError:  # pylint: disable=broad-except
+                LOGGER.warning("Could not start results server")
         
         # Start shared inference worker
         self.inference_worker.start()
@@ -345,11 +347,12 @@ class StreamingConsumerApp:
             self.inference_worker.join(timeout=3)
             LOGGER.info("Stopped shared inference worker")
 
-            try:
-                from consumer.results_server import get_results_server
-                get_results_server().stop()
-            except OSError:
-                LOGGER.warning("Could not stop results server cleanly")
+            if self.runtime_settings.enable_results_server:
+                try:
+                    from consumer.results_server import get_results_server
+                    get_results_server().stop()
+                except OSError:
+                    LOGGER.warning("Could not stop results server cleanly")
             
             LOGGER.info("Consumer shutdown complete")
 

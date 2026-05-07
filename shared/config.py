@@ -42,6 +42,14 @@ class RuntimeSettings:
     vad_min_speech_seconds: float = field(
         default_factory=lambda: float(os.getenv("VAD_MIN_SPEECH_SECONDS", "2.0"))
     )
+    enable_results_server: bool = field(
+        default_factory=lambda: str(os.getenv("ENABLE_RESULTS_SERVER", "1")).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+    )
 
 
 @dataclass(frozen=True)
