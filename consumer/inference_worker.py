@@ -21,6 +21,7 @@ from transformers import (
     Qwen2AudioForConditionalGeneration,
 )
 import partial_json_parser
+import numpy as np
 
 # Toggle to enable/disable calling the Qwen inference path. Set to '0'/'false' to disable.
 load_dotenv()
@@ -35,7 +36,7 @@ ENABLE_RESULTS_SERVER = str(_env_rs_flag).strip().lower() in ("1", "true", "yes"
 
 LOGGER = logging.getLogger(__name__)
 
-from consumer.infer_utils import USER_PROMPT
+from consumer.infer_utils import USER_PROMPT, save_debug_sample
 # Import results server for broadcasting
 try:
     from consumer.results_server import get_results_server
@@ -54,7 +55,7 @@ def format_history(history: List[Dict]) -> str:
     """
     context = ""
     for item in history:
-        speaker = "inteviewer" if item["speaker"] == 1 else "candidate"
+        speaker = "inteviewer" if item["speaker"] == "1" else "candidate"
         context += f"{speaker}: {item['transcript']}\n"
     return context.strip()
 
@@ -87,11 +88,11 @@ def load_model() -> tuple:
 
     processor = AutoProcessor.from_pretrained(model_name, cache_dir=model_cache_path)
 
-    base_model = Qwen2AudioForConditionalGeneration.from_pretrained(
+    model = Qwen2AudioForConditionalGeneration.from_pretrained(
         model_name, torch_dtype="auto", device_map="auto", cache_dir=model_cache_path
     )
 
-    model = PeftModel.from_pretrained(base_model, lora_path)
+    model = PeftModel.from_pretrained(model, lora_path)
     model.eval()
 
     LOGGER.info("Model and processor loaded successfully")
@@ -124,11 +125,7 @@ class InferenceWorker(threading.Thread):
         speaker_id: str = "unknown",
         history: Optional[List[Dict]] = None,
     ) -> dict:
-        """Placeholder for Qwen2Audio model inference.
-
-        This function is isolated so the real Qwen2Audio integration can be added
-        later without modifying the receiver or buffering logic.
-
+        """
         Args:
             audio_array: numpy float32 array of audio samples (16kHz mono)
             speaker_id: identifier of the speaker (e.g., "speaker_1", "speaker_2")
@@ -148,19 +145,22 @@ class InferenceWorker(threading.Thread):
 
         hist = history or []
         history_text = format_history(hist)
+        speaker = "interviewer" if speaker_id == "1" else "candidate"
+        prompt = USER_PROMPT.replace("<SPEAKER>", speaker)
         prompt = USER_PROMPT.replace("<PREVIOUS CONTEXT>", history_text)
 
-        convo = [{"role": "user", "content": [
-            {"type": "text", "text": prompt}, 
-            {"type": "audio", "audio": audio_array}
-            ]}]
-        
+        convo = [
+            {"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "audio", "audio": "test.wav"},
+            ]}
+        ]
+
         text = self.processor.apply_chat_template(convo, add_generation_prompt=True, tokenize=False)
-        inputs = self.processor(text=text, audios=[audio_array], return_tensors="pt", sampling_rate=16000)
+        inputs = self.processor(text=text, audio=audio_array, return_tensors="pt", padding=True, sampling_rate=16000)
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
-        with torch.inference_mode():
-            generate_ids = self.model.generate(**inputs, max_new_tokens=1024, do_sample=False)
+        generate_ids = self.model.generate(**inputs, max_length=2048, temperature=0.001, num_beams=1, num_return_sequences=1)
         generate_ids = generate_ids[:, inputs["input_ids"].size(1):]
 
         response = self.processor.batch_decode(
@@ -168,12 +168,18 @@ class InferenceWorker(threading.Thread):
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False
             )
-        parsed = partial_json_parser.loads(response[0])
 
-        print("Parsed Output: ", parsed)
+        # save_debug_sample(audio_array, history_text)
+        try:
+            parsed = partial_json_parser.loads(response[0])
+            print("Parsed Output: ", parsed)
+        except Exception as e:
+            print(e)
+            print("Raw: ", response[0])
+            parsed = {}
         return {
             "speaker": speaker_id,
-            "transcript": parsed.get("transcript") or "No transcript",
+            "transcript": parsed.get("transcript") or "Silence",
             "technical_qa": parsed.get("is_technical_qa") or False,
             "response_reasoning": parsed.get("response_reasoning") or "Reasoning unavailable.",
             "answer_rating": parsed.get("answer_rating") or "satisfactory",

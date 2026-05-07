@@ -53,3 +53,32 @@ PREVIOUS CONTEXT:
 
 **Do not copy this user instruction to output**
 """
+
+# USER_PROMPT = """###Your task is to generate exact transcript of the given audio and return in a strict JSON strcuture
+# JSON SCHEMA:
+# {
+# "transcript": <exact trascription of input audio>
+# }
+# """
+
+import os
+import numpy as np
+from datetime import datetime
+
+def save_debug_sample(audio_array: np.ndarray, history, base_dir="debug_samples"):
+    # Create unique run folder
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    save_dir = os.path.join(base_dir, ts)
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Save audio
+    audio_path = os.path.join(save_dir, "audio.npy")
+    np.save(audio_path, audio_array)
+
+    # Save history text
+    history_text = str(history) if history is not None else "[]"
+    history_path = os.path.join(save_dir, "history.txt")
+    with open(history_path, "w", encoding="utf-8") as f:
+        f.write(history_text)
+
+    return save_dir

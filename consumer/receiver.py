@@ -266,7 +266,7 @@ class StreamingConsumerApp:
         )
 
         # Keep last 2 seconds of raw audio for overlap with next buffer
-        overlap_seconds = 2.0
+        overlap_seconds = 0.5
         overlap_samples = int(overlap_seconds * self.audio_settings.sample_rate_hz)
         
         if len(full_audio) > overlap_samples:
