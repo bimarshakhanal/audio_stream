@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import base64
-import json
 import logging
 import os
 import signal
 import time
 import asyncio
+import struct
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -58,27 +57,48 @@ class MultiSpeakerStreamer:
 
         return audio
 
-    def _make_chunk_message(
-        self,
-        speaker_id: str,
-        chunk_id: int,
-        chunk: np.ndarray,
-        start_time: float,
-    ) -> str:
-        payload = base64.b64encode(chunk.astype(np.float32).tobytes()).decode("utf-8")
-        message = {
-            "event": "chunk",
-            "speaker": speaker_id,
-            "chunk_id": str(chunk_id),
-            "timestamp": str(time.time()),
-            "start_time": str(start_time),
-            "payload": payload,
-            "sample_rate_hz": str(self.audio_settings.sample_rate_hz),
-        }
-        return json.dumps(message)
+    def _build_multi_speaker_packet(self, chunk_idx: int, speaker_chunks: Dict[str, List[np.ndarray]]) -> bytes:
+        """
+        Build a binary packet for a single chunk index containing multiple speakers.
 
-    def _make_eos_message(self) -> str:
-        return json.dumps({"event": "eos", "timestamp": str(time.time()), "payload": ""})
+        Packet format:
+        [header][speaker_block...]
+
+        Header: <float32 timestamp seconds><uint8 num_speakers>
+
+        Speaker block: <uint8 speaker_id><uint16 sample_count><pcm16 bytes>
+        """
+        chunk_duration_s = self.audio_settings.chunk_ms / 1000.0
+        timestamp = time.time()
+
+        # collect blocks for speakers that have this chunk index
+        blocks: List[bytes] = []
+        for speaker_id in sorted(self.input_paths.keys()):
+            chunks = speaker_chunks.get(speaker_id, [])
+            if chunk_idx >= len(chunks):
+                continue
+
+            chunk = chunks[chunk_idx]
+            if chunk.size == 0:
+                continue
+
+            # ensure audio is in [-1,1], convert to int16 PCM
+            pcm16 = (np.clip(chunk, -1.0, 1.0) * 32767.0).astype(np.int16)
+            pcm_bytes = pcm16.tobytes()
+
+            try:
+                spk_id_uint = int(speaker_id)
+            except Exception:
+                spk_id_uint = 0
+
+            block = struct.pack("<B", spk_id_uint)
+            block += struct.pack("<H", len(pcm16))
+            block += pcm_bytes
+            blocks.append(block)
+
+        num_speakers = len(blocks)
+        header = struct.pack("<fB", timestamp, num_speakers)
+        return header + b"".join(blocks)
 
     def _install_signal_handlers(self, loop: asyncio.AbstractEventLoop) -> None:
         def _graceful_stop(_signum: int, _frame: Any) -> None:
@@ -116,38 +136,23 @@ class MultiSpeakerStreamer:
         max_chunks = max(len(chunks) for chunks in speaker_chunks.values())
 
         start_wall = time.monotonic()
-        global_chunk_id = 0
 
         for chunk_idx in range(max_chunks):
             if self.stop_event.is_set():
                 break
 
-            for speaker_id in sorted(self.input_paths.keys()):
-                if chunk_idx >= len(speaker_chunks[speaker_id]):
-                    continue
+            packet = self._build_multi_speaker_packet(chunk_idx, speaker_chunks)
+            if packet and len(packet) > 0:
+                await websocket.send(packet)
+                LOGGER.info("Emitted packet chunk_idx=%d bytes=%d", chunk_idx, len(packet))
 
-                chunk = speaker_chunks[speaker_id][chunk_idx]
-                start_time = chunk_idx * chunk_duration_s
+            # schedule next deadline based purely on chunk index
+            next_deadline = start_wall + (chunk_idx + 1) * chunk_duration_s
+            sleep_time = max(0.0, next_deadline - time.monotonic())
+            await asyncio.sleep(sleep_time)
 
-                await websocket.send(
-                    self._make_chunk_message(speaker_id, global_chunk_id, chunk, start_time)
-                )
-                LOGGER.info(
-                    "Emitted chunk speaker=%s id=%d start_time=%.2fs samples=%d",
-                    speaker_id,
-                    global_chunk_id,
-                    start_time,
-                    len(chunk),
-                )
-
-                global_chunk_id += 1
-
-                next_deadline = start_wall + global_chunk_id * chunk_duration_s
-                sleep_time = max(0.0, next_deadline - time.monotonic())
-                await asyncio.sleep(sleep_time)
-
-        await websocket.send(self._make_eos_message())
-        LOGGER.info("End-of-stream event sent")
+        await websocket.send(b"EOS")
+        LOGGER.info("End-of-stream marker sent")
 
     async def _handler(self, websocket: Any) -> None:
         LOGGER.info("Consumer connected over WebSocket")

@@ -47,15 +47,15 @@ NEMO_MODEL = "nvidia/diar_streaming_sortformer_4spk-v2.1"
 
 # Streaming configuration (in 80ms frames)
 # Very high latency: good for offline processing
-CHUNK_LEN = 340      # 27.2s latency
-CHUNK_RIGHT_CONTEXT = 40
-FIFO_LEN = 40
-SPKCACHE_UPDATE_PERIOD = 300
-SPKCACHE_LEN = 188
+CHUNK_LEN = 25
+CHUNK_RIGHT_CONTEXT = 10
+FIFO_LEN = 20
+SPKCACHE_UPDATE_PERIOD = 50
+SPKCACHE_LEN = 64
 
 # Interval filtering
-MIN_SEGMENT_DURATION = 0.15
-MAX_GAP_TO_MERGE = 0.25
+MAX_GAP_TO_MERGE = 0.4
+MIN_SEGMENT_DURATION = 0.25
 
 
 # ============================================================================

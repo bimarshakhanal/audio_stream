@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import json
 import logging
 import queue
 import signal
 import threading
 import time
+import struct
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -60,8 +60,58 @@ class WebSocketChunkReceiver(threading.Thread):
                     async for raw_message in ws:
                         if self._stop_event.is_set():
                             break
-                        chunk_fields = json.loads(raw_message)
-                        self._on_chunk(chunk_fields)
+
+                        # Binary protocol: expect bytes frames
+                        if isinstance(raw_message, (bytes, bytearray)):
+                            data = bytes(raw_message)
+                            if data == b"EOS":
+                                LOGGER.info("Received EOS marker from producer")
+                                self._on_chunk({"event": "eos"})
+                                continue
+
+                            # Parse header
+                            try:
+                                if len(data) < 5:
+                                    LOGGER.warning("Received too-short packet; skipping")
+                                    continue
+                                timestamp, num_speakers = struct.unpack("<fB", data[:5])
+                            except Exception:
+                                LOGGER.exception("Failed to unpack packet header; skipping")
+                                continue
+
+                            offset = 5
+                            for _ in range(num_speakers):
+                                if offset + 3 > len(data):
+                                    LOGGER.warning("Malformed speaker block; stopping parse")
+                                    break
+
+                                speaker_id = data[offset]
+                                offset += 1
+                                sample_count = struct.unpack_from("<H", data, offset)[0]
+                                offset += 2
+
+                                pcm_bytes_len = int(sample_count) * 2
+                                pcm_bytes = data[offset : offset + pcm_bytes_len]
+                                offset += pcm_bytes_len
+
+                                if len(pcm_bytes) != pcm_bytes_len:
+                                    LOGGER.warning("Incomplete PCM bytes for speaker %s; expected=%d got=%d", speaker_id, pcm_bytes_len, len(pcm_bytes))
+                                    break
+
+                                pcm = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32767.0
+
+                                chunk_fields = {
+                                    "event": "chunk",
+                                    "speaker": str(speaker_id),
+                                    "timestamp": str(timestamp),
+                                    "start_time": str(timestamp),
+                                    "audio": pcm,
+                                }
+                                self._on_chunk(chunk_fields)
+                            continue
+
+                        # Text frames are no longer supported under the binary protocol
+                        LOGGER.warning("Received text frame (unsupported); ignoring")
             except websockets.ConnectionClosed:
                 LOGGER.warning("WebSocket closed; reconnecting")
             except OSError:
@@ -135,9 +185,7 @@ class StreamingConsumerApp:
             stop_event=self.stop_event,
         )
 
-    def _decode_audio(self, payload_b64: str) -> np.ndarray:
-        raw = base64.b64decode(payload_b64)
-        return np.frombuffer(raw, dtype=np.float32)
+    # Legacy base64 decoder removed; incoming protocol delivers raw numpy audio in 'audio' key
 
     def _speaker_output_dir(self, speaker_id: str) -> Path:
         return Path("chunks") / self.run_name / f"speaker_{speaker_id}"
@@ -258,13 +306,12 @@ class StreamingConsumerApp:
         chunk_id = chunk_fields.get("chunk_id")
         timestamp = chunk_fields.get("timestamp")
         start_time = float(chunk_fields.get("start_time", "0"))
-        payload_b64 = chunk_fields.get("payload")
 
-        if not payload_b64:
-            LOGGER.warning("Skipping chunk %s: missing payload", chunk_id)
+        audio_chunk = chunk_fields.get("audio")
+        if audio_chunk is None:
+            LOGGER.warning("Skipping chunk %s: missing audio payload", chunk_id)
             return
 
-        audio_chunk = self._decode_audio(payload_b64)
         LOGGER.info(
             "Chunk arrived: speaker=%s id=%s timestamp=%s start_time=%.2fs samples=%d",
             speaker_id,
@@ -302,7 +349,6 @@ class StreamingConsumerApp:
         # During continuous buffering (up to 30s), we don't flush on silence.
         # Silence detection would break long utterances with natural pauses.
         # Only the buffer timeout (30s) triggers a flush during active recording.
-
     def _flush_all_pending(self) -> None:
         for speaker_id in self.speaker_ids:
             if self.speaker_buffers[speaker_id]:
