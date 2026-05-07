@@ -50,4 +50,6 @@ STRICT JSON STRUCTURE:
 
 PREVIOUS CONTEXT:
 <PREVIOUS CONTEXT>
+
+**Do not copy this user instruction to output**
 """

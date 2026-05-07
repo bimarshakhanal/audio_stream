@@ -154,7 +154,7 @@ class InferenceWorker(threading.Thread):
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
         with torch.inference_mode():
-            generate_ids = self.model.generate(**inputs, max_new_tokens=256, do_sample=False)
+            generate_ids = self.model.generate(**inputs, max_new_tokens=1024, do_sample=False)
         generate_ids = generate_ids[:, inputs["input_ids"].size(1):]
 
         response = self.processor.batch_decode(
@@ -163,13 +163,15 @@ class InferenceWorker(threading.Thread):
             clean_up_tokenization_spaces=False
             )
         parsed = partial_json_parser.loads(response[0])
+
+        print("Parsed Output: ", parsed)
         return {
             "speaker": speaker_id,
-            "transcript": parsed["transcript"] or "No transcript",
-            "technical_qa": parsed["is_technical_qa"] or False,
-            "response_reasoning": parsed["response_reasoning"] or "Reasoning for the technical response...",
-            "answer_rating": parsed["answer_rating"] or "satisfactory",
-            "follow_up_question": parsed["answer_rating"] or "This is a follow-up question?",
+            "transcript": parsed.get("transcript") or "No transcript",
+            "technical_qa": parsed.get("is_technical_qa") or False,
+            "response_reasoning": parsed.get("response_reasoning") or "Reasoning unavailable.",
+            "answer_rating": parsed.get("answer_rating") or "satisfactory",
+            "follow_up_question": parsed.get("follow_up_question") or "No follow-up question.",
         }
 
     def run(self) -> None:
