@@ -1,6 +1,9 @@
 *.mp4
 *.wav
 .venv
+*.json
+*.csv
+*.png
 __pycache__/
 .env
 chunks

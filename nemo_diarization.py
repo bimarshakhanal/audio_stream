@@ -40,8 +40,8 @@ load_dotenv()
 # Configuration Constants
 # ============================================================================
 
-INPUT_AUDIO_PATH = "data/full_audio3.wav"
-OUTPUT_DIR = "diarization_output/sample3"
+INPUT_AUDIO_PATH = "data/full_audio6.wav"
+OUTPUT_DIR = "diarization_output/sample6"
 NUM_SPEAKERS = 2
 NEMO_MODEL = "nvidia/diar_streaming_sortformer_4spk-v2.1"
 
