@@ -74,7 +74,7 @@ class SileroVADEngine:
             audio = audio.astype(np.float32)
 
         audio_tensor = torch.from_numpy(audio).to(self.device)
-        timestamps = self._get_speech_timestamps(
+        timestamps = self._get_speech_timestamps(   
             audio_tensor,
             self._model,
             threshold=self.threshold,
